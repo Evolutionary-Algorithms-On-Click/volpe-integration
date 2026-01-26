@@ -12,8 +12,6 @@ logger = logging.getLogger("volpe-integration")
 
 app = FastAPI(title="Volpe Integration Service")
 
-# Initialize Framework Client
-# Assuming the framework runs on localhost:8080 based on typical Go conventions or configured env
 FRAMEWORK_URL = os.getenv("VOLPE_FRAMEWORK_URL", "http://localhost:8000")
 fw_client = FrameworkClient(FRAMEWORK_URL)
 
@@ -29,7 +27,7 @@ async def submit_job(request: OptimizationRequest):
     logger.info(f"Received submission for user: {request.user_id}, notebook: {request.notebook_id}")
 
     try:
-        # 1. Build the tarball context
+        #  Build the tarball context
         tar_stream = builder.create_build_context(request.notebook, request.requirements, request.notebook_id)
         
         # Save local copy for debugging/verification
@@ -45,8 +43,8 @@ async def submit_job(request: OptimizationRequest):
         # Reset stream position for the HTTP upload
         tar_stream.seek(0)
         
-        # 2. Define metadata for the framework
-        # The framework expects 'problemID', 'memory', 'targetInstances'
+        # Define metadata for the framework
+        # The framework expects problemID, memory, targetInstances
         # We derive problemID from notebook_id for now
         metadata = {
             "problemID": request.notebook_id,
@@ -54,7 +52,7 @@ async def submit_job(request: OptimizationRequest):
             "targetInstances": 1
         }
 
-        # 3. Upload to Framework
+        # Upload to Framework
         upload_success = await fw_client.upload_problem(request.notebook_id, tar_stream, metadata)
         
         if not upload_success:
@@ -62,7 +60,7 @@ async def submit_job(request: OptimizationRequest):
             raise HTTPException(status_code=502, detail="Failed to upload problem to Volpe Framework")
         
 
-        # 4. Start the problem
+        #  Start the problem
         start_success = await fw_client.start_problem(request.notebook_id)
         
         if not start_success:

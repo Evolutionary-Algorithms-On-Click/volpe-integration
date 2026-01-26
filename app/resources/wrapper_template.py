@@ -5,7 +5,8 @@ import grpc
 import numpy as np
 import threading
 import sys
-from typing import Any
+import argparse
+from typing import Any, override
 
 # Import protos
 import volpe_container_pb2 as pb
@@ -16,186 +17,176 @@ import volpe_container_pb2_grpc as vp
 # {{USER_CODE_INJECTION}}
 # --- USER CODE SECTION END ---
 
-# Defaults if not provided by user
-if 'BASE_POPULATION_SIZE' not in globals():
-    BASE_POPULATION_SIZE = 100
-else:
-    BASE_POPULATION_SIZE = globals()['BASE_POPULATION_SIZE']
 
-class VolpeService(vp.VolpeContainerServicer):
-    def __init__(self):
+# --- SERIALIZATION HELPERS ---
+
+def individual_to_bytes(ind):
+    """Encodes a DEAP individual to bytes (float32 buffer)."""
+    # Flattens list/array to float32 bytes.
+    # If your individual is complex (e.g. tree), you must adapt this logic.
+    try:
+        arr = np.array(ind, dtype=np.float32)
+        return pbc.Individual(genotype=arr.tobytes(), fitness=ind.fitness.values[0] if ind.fitness.valid else 0.0)
+    except Exception as e:
+        print(f"Serialization Error: {e}", file=sys.stderr)
+        return pbc.Individual(genotype=b'', fitness=0.0)
+
+def bytes_to_individual(pb_ind):
+    """Decodes a protobuf Individual back to a DEAP creator.Individual object."""
+    # Reads bytes as float32
+    arr = np.frombuffer(pb_ind.genotype, dtype=np.float32)
+    
+    # CONVERSION NOTICE:
+    # If your problem uses Integers (like TSP), cast here: arr.astype(int).tolist()
+    # If your problem uses Floats, keep as is: arr.tolist()
+    # Defaulting to float for generic template, CHANGE IF NEEDED:
+    native_data = arr.tolist() 
+    
+    ind = creator.Individual(native_data)
+    ind.fitness.values = (pb_ind.fitness,)
+    return ind
+
+def individual_to_string(ind):
+    """Encodes a DEAP individual to a string representation for display."""
+    return pb.ResultIndividual(representation=str(ind), 
+                               fitness=ind.fitness.values[0] if ind.fitness.valid else 0.0)
+
+# --- SERVICE CLASS ---
+
+class VolpeGreeterServicer(vp.VolpeContainerServicer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.popln = []
         self.poplock = threading.Lock()
-        self.ensure_user_functions()
         
-        # Initialize population
-        # We expect gen_ind to return (individual_representation, fitness) or just representation?
-        # The user code in volpe-py returned (ind, fitness). We will assume that protocol.
-        self.popln = [self.gen_ind() for _ in range(BASE_POPULATION_SIZE)]
+        # Try to initialize if toolbox is ready
+        try:
+            self._init_population()
+        except Exception as e:
+            print(f"Warning: Initial population creation failed (check toolbox setup): {e}")
 
-    def ensure_user_functions(self):
-        # Map globals to instance methods
-        required = ['fitness', 'gen_ind', 'mutate', 'crossover', 'select']
-        for name in required:
-            if name in globals():
-                setattr(self, name, globals()[name])
-            else:
-                print(f"CRITICAL WARNING: User function '{name}' not found. Service may fail.")
-                # We could define dummy fallbacks here if needed
-                
-    def SayHello(self, request, context):
-        return pb.HelloReply(message="Hello " + request.name)
+    def _init_population(self):
+        self.popln = toolbox.population(n=POP_SIZE)
+        fitnesses = list(map(toolbox.evaluate, self.popln))
+        for ind, fit in zip(self.popln, fitnesses):
+            ind.fitness.values = fit
 
-    def InitFromSeed(self, request, context):
+    @override
+    def SayHello(self, request: pb.HelloRequest, context: grpc.ServicerContext):
+        return pb.HelloReply(message="Volpe Service Ready")
+    
+    @override
+    def InitFromSeed(self, request: pb.Seed, context: grpc.ServicerContext):
         with self.poplock:
-            # Re-initialize population
-            self.popln = [self.gen_ind() for _ in range(BASE_POPULATION_SIZE)]
+            self._init_population()
             return pb.Reply(success=True)
-
-    def InitFromSeedPopulation(self, request, context):
-        with self.poplock:
-            ogLen = len(self.popln)
-            # Decode incoming population
-            seedPop = []
-            for memb in request.members:
-                # Assuming genotype is bytes, we might need a user-defined decode function
-                # or assume standard numpy float32 bytes if not specified.
-                # For this template, we'll try to use a 'decode' function if it exists, else generic numpy
-                if 'decode' in globals():
-                    ind_val = globals()['decode'](memb.genotype)
-                else:
-                    ind_val = np.frombuffer(memb.genotype, dtype=np.float32)
-                
-                # Recalculate fitness? Or trust the one sent?
-                # Usually we trust the one sent or re-evaluate. 
-                # Let's trust it for speed, or re-eval if needed.
-                # For consistency with local format (ind, fitness), we store that tuple.
-                seedPop.append((ind_val, memb.fitness))
-
-            if self.popln is None:
-                self.popln = []
-            self.popln.extend(seedPop)
             
-            # Select back to size
-            self.popln = self.select(self.popln, ogLen)
+    @override
+    def InitFromSeedPopulation(self, request: pbc.Population, context: grpc.ServicerContext):
+        with self.poplock:
+            incoming_pop = [bytes_to_individual(ind) for ind in request.members]
+            if not self.popln:
+                 self.popln = incoming_pop
+            else:
+                self.popln.extend(incoming_pop)
+                
+            # Maintain size
+            if len(self.popln) > POP_SIZE:
+                 self.popln = toolbox.select(self.popln, POP_SIZE)
             return pb.Reply(success=True)
-
-    def GetBestPopulation(self, request, context):
+            
+    @override
+    def GetBestPopulation(self, request: pb.PopulationSize, context):
         with self.poplock:
             if not self.popln:
-                return pbc.Population(members=[], problemID="p1")
+                return pbc.Population(members=[], problemID=NOTEBOOK_ID)
             
-            # Sort by fitness (assuming lower is better? Or depends on user problem. 
-            # We usually assume minimization or the user sorts in 'select'.)
-            # But here we need to return the "Best".
-            # We'll assume the user's fitness function returns a float where smaller is better 
-            # OR we rely on standard sorting.
-            # A safer bet: sort by key=lambda x: x[1] (fitness)
-            popSorted = sorted(self.popln, key=lambda x: x[1])
-            best_k = popSorted[:request.size]
+            # Use selBest which respects the fitness weights (min or max)
+            best_inds = tools.selBest(self.popln, k=min(len(self.popln), request.size))
+            pb_members = [individual_to_bytes(ind) for ind in best_inds]
+            return pbc.Population(members=pb_members, problemID=NOTEBOOK_ID)
             
-            # Encode back to bytes
-            indList = []
-            for mem in best_k:
-                if 'encode' in globals():
-                    gen_bytes = globals()['encode'](mem[0])
-                else:
-                    gen_bytes = mem[0].astype(np.float32).tobytes()
-                
-                indList.append(pbc.Individual(genotype=gen_bytes, fitness=mem[1]))
-                
-            return pbc.Population(members=indList, problemID="p1")
-
-    def GetResults(self, request, context):
-        # Similar to GetBestPopulation but returns ResultIndividual (string representation)
+    @override
+    def GetResults(self, request: pb.PopulationSize, context):
         with self.poplock:
             if not self.popln:
                 return pb.ResultPopulation(members=[])
+            best_inds = tools.selBest(self.popln, k=min(len(self.popln), request.size))
+            res_members = [individual_to_string(ind) for ind in best_inds]
+            return pb.ResultPopulation(members=res_members)
             
-            popSorted = sorted(self.popln, key=lambda x: x[1])
-            best_k = popSorted[:request.size]
-            
-            indList = []
-            for mem in best_k:
-                # Use encode_str if available
-                if 'encode_str' in globals():
-                    rep_str = globals()['encode_str'](mem[0])
-                else:
-                    rep_str = str(mem[0])
-                    
-                indList.append(pb.ResultIndividual(representation=rep_str, fitness=mem[1]))
-                
-            return pb.ResultPopulation(members=indList)
-
-    def GetRandom(self, request, context):
+    @override
+    def GetRandom(self, request: pb.PopulationSize, context):
         with self.poplock:
             if not self.popln:
-                return pbc.Population(members=[], problemID="p1")
+                 return pbc.Population(members=[], problemID=NOTEBOOK_ID)
+            k = min(len(self.popln), request.size)
+            selected = random.sample(self.popln, k)
+            pb_members = [individual_to_bytes(ind) for ind in selected]
+            return pbc.Population(members=pb_members, problemID=NOTEBOOK_ID)
             
-            indices = np.random.randint(0, len(self.popln), request.size)
-            selected = [self.popln[i] for i in indices]
-            
-            indList = []
-            for mem in selected:
-                if 'encode' in globals():
-                    gen_bytes = globals()['encode'](mem[0])
-                else:
-                    gen_bytes = mem[0].astype(np.float32).tobytes()
-                indList.append(pbc.Individual(genotype=gen_bytes, fitness=mem[1]))
-                
-            return pbc.Population(members=indList, problemID="p1")
-
-    def RunForGenerations(self, request, context):
-        # request.size is treated as generations or ignore? 
-        # The proto name is PopulationSize but context usually implies "steps" or just "run one step".
-        # We'll assume one generation step or standard evolution cycle.
+    @override
+    def AdjustPopulationSize(self, request: pb.PopulationSize, context: grpc.ServicerContext):
         with self.poplock:
-            # Standard EA Loop: Select -> Crossover -> Mutate -> Replace
-            ogLen = len(self.popln)
-            
-            # Select parents
-            parents = self.select(self.popln, ogLen)
-            
-            offspring = []
-            # Generate offspring (pairwise crossover)
-            for i in range(0, ogLen, 2):
-                if i+1 < len(parents):
-                    if np.random.random() < 0.9: # Crossover prob default
-                         child1, child2 = self.crossover(parents[i], parents[i+1])
-                         offspring.append(child1)
-                         offspring.append(child2)
-                    else:
-                        offspring.append(parents[i])
-                        offspring.append(parents[i+1])
-                else:
-                    offspring.append(parents[i])
-            
-            # Mutate
-            for i in range(len(offspring)):
-                # We assume mutate returns (ind, fitness)
-                # Or just modifies ind? User definition varies. 
-                # wrapper_main in volpe-py implied: newinds[i] = self.mutate(newinds[i])
-                offspring[i] = self.mutate(offspring[i])
+             target_size = request.size
+             current_size = len(self.popln)
+             
+             if current_size < target_size:
+                 needed = target_size - current_size
+                 new_inds = toolbox.population(n=needed)
+                 fitnesses = map(toolbox.evaluate, new_inds)
+                 for ind, fit in zip(new_inds, fitnesses):
+                     ind.fitness.values = fit
+                 self.popln.extend(new_inds)
+             elif current_size > target_size:
+                 self.popln = tools.selBest(self.popln, target_size)
+             return pb.Reply(success=True)
+             
+    @override
+    def RunForGenerations(self, request: pb.PopulationSize, context):
+        generations = request.size if request.size > 0 else 1
+        with self.poplock:
+            for _ in range(generations):
+                # 1. Select
+                offspring = toolbox.select(self.popln, len(self.popln))
+                # 2. Clone
+                offspring = list(map(toolbox.clone, offspring))
                 
-            # Replace/Merge
-            # Simple strategy: Comma or Plus strategy. 
-            # We'll assume (mu + lambda) i.e. combine and select best
-            combined = self.popln + offspring
-            self.popln = self.select(combined, ogLen)
-            
-            return pb.Reply(success=True)
-
-    def AdjustPopulationSize(self, request, context):
-        # Not implemented for now
+                # 3. Mate
+                for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                    if random.random() < CX_PROB:
+                        toolbox.mate(child1, child2)
+                        del child1.fitness.values
+                        del child2.fitness.values
+                
+                # 4. Mutate
+                for mutant in offspring:
+                    if random.random() < MUT_PROB:
+                        toolbox.mutate(mutant)
+                        del mutant.fitness.values
+                        
+                # 5. Evaluate
+                invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+                fitnesses = map(toolbox.evaluate, invalid_ind)
+                for ind, fit in zip(invalid_ind, fitnesses):
+                    ind.fitness.values = fit
+                    
+                # 6. Replace
+                self.popln = offspring
+                
         return pb.Reply(success=True)
 
-if __name__ == '__main__':
-    print("Starting Volpe Container Service...")
-    sys.stdout.flush()
+if __name__=='__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=str, default='8081', help='Port to listen on')
+    args, unknown = parser.parse_known_args()
 
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
-    vp.add_VolpeContainerServicer_to_server(VolpeService(), server)
-    server.add_insecure_port("0.0.0.0:8081")
+    vp.add_VolpeContainerServicer_to_server(VolpeGreeterServicer(), server)
+    
+    print(f"Universal DEAP Service starting on port {args.port}...")
+    server.add_insecure_port(f"0.0.0.0:{args.port}")
+    
     server.start()
-    print("Server listening on 0.0.0.0:8081")
     sys.stdout.flush()
     server.wait_for_termination()

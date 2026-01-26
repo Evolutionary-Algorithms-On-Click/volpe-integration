@@ -15,7 +15,8 @@ def extract_code_from_notebook(notebook: Notebook) -> str:
     code_blocks = []
     for cell in notebook.cells:
         if cell.cell_type == 'code':
-            code_blocks.append(cell.source)
+            if cell.cell_name != 'results_and_plots' and cell.cell_name != 'evolution_loop':
+                code_blocks.append(cell.source)
     return "\n\n".join(code_blocks)
 
 def generate_wrapper_code(user_code: str) -> str:
@@ -73,9 +74,6 @@ def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: 
             src = VOLPE_PY_PATH / p_file
         
         if src.exists():
-            # We copy them to the root of the build context as the Dockerfile 
-            # usually expects them in the same level or a specific subfolder.
-            # Based on wrapper_template imports, they should be in the python path.
             shutil.copy(src, path / p_file)
         else:
             print(f"Warning: Proto file {p_file} not found.")
@@ -117,8 +115,6 @@ def create_build_context(notebook: Notebook, requirements: str | None, notebook_
             
             image_tar_stream.seek(0)
             
-            # Optional: Remove the image locally after saving to save space
-            # client.images.remove(image_tag, force=True)
             
             return image_tar_stream
         except Exception as e:
