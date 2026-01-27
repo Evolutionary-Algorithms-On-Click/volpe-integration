@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from app.models.schemas import OptimizationRequest
@@ -5,6 +6,7 @@ from app.services import builder
 from app.services.framework_client import FrameworkClient
 import logging
 import os
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,8 +60,7 @@ async def submit_job(request: OptimizationRequest):
         if not upload_success:
             # logger.error(f"Failed to upload problem: {e}")
             raise HTTPException(status_code=502, detail="Failed to upload problem to Volpe Framework")
-        
-
+     
         #  Start the problem
         start_success = await fw_client.start_problem(request.notebook_id)
         

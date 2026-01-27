@@ -8,7 +8,7 @@ class FrameworkClient:
         self.base_url = base_url.rstrip('/')
 
     async def upload_problem(self, problem_id: str, tar_stream, metadata: dict):
-        url = f"{self.base_url}/api/v1/problems/{problem_id}"
+        url = f"{self.base_url}/problems/{problem_id}"
         
         # Prepare the multipart upload
         files = {'image': (f'{problem_id}.tar', tar_stream, 'application/x-tar')}
@@ -30,12 +30,12 @@ class FrameworkClient:
                 return False
 
     async def start_problem(self, problem_id: str):
-        url = f"{self.base_url}/api/v1/problems/{problem_id}/start"
+        url = f"{self.base_url}/problems/{problem_id}/start"
         logger.info(f"Starting problem {problem_id}")
         
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(url, timeout=10.0)
+                response = await client.put(url, timeout=10.0)
                 response.raise_for_status()
                 return True
             except httpx.HTTPError as e:
@@ -43,10 +43,11 @@ class FrameworkClient:
                 return False
 
     async def stream_results(self, problem_id: str):
-        url = f"{self.base_url}/api/v1/problems/{problem_id}/results"
+        url = f"{self.base_url}/problems/{problem_id}/results"
         logger.info(f"Connecting to result stream for {problem_id}")
         
         async with httpx.AsyncClient() as client:
             async with client.stream('GET', url, timeout=None) as response:
                 async for chunk in response.aiter_bytes():
+                    # print(chunk)
                     yield chunk
