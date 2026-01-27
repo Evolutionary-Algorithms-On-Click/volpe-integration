@@ -32,7 +32,7 @@ def generate_wrapper_code(user_code: str) -> str:
     
     return template.replace("# {{USER_CODE_INJECTION}}", user_code)
 
-def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: str | None, notebook_id: str) -> None:
+def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: str | None, notebook_id: str, data_file: tuple[str, bytes] | None = None) -> None:
     """
     Prepares the physical files needed for a docker build in a temporary directory.
     """
@@ -44,10 +44,16 @@ def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: 
     (path / "main.py").write_text(main_py_content, encoding='utf-8')
 
     #  Write data.csv into tmp dir if exists in root folder
+    
+    # TESTING: local data.csv file (for testing purposes)
     data_csv_path = Path("data.csv")
     if data_csv_path.exists():
         shutil.copy(data_csv_path, path / "data.csv")
 
+    # Write uploaded data file if provided (overwrites local data.csv if same name)
+    if data_file:
+        f_name, f_content = data_file
+        (path / f_name).write_bytes(f_content)
 
     # DEBUG: Save generated main.py to local disk for inspection
     debug_dir = Path("debug_artifacts")
@@ -84,7 +90,7 @@ def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: 
         else:
             print(f"Warning: Proto file {p_file} not found.")
 
-def create_build_context(notebook: Notebook, requirements: str | None, notebook_id: str) -> io.BytesIO:
+def create_build_context(notebook: Notebook, requirements: str | None, notebook_id: str, data_file: tuple[str, bytes] | None = None) -> io.BytesIO:
     """
     Performs 'docker build' and 'docker save' to return a full image tarball.
     """
@@ -94,7 +100,7 @@ def create_build_context(notebook: Notebook, requirements: str | None, notebook_
     # create a tmp dir for the build context
     with tempfile.TemporaryDirectory() as tmp_dir:
         print(f"Preparing build context in {tmp_dir}...")
-        create_build_context_folder(tmp_dir, notebook, requirements, notebook_id)
+        create_build_context_folder(tmp_dir, notebook, requirements, notebook_id, data_file)
         
         # docker Build
         print(f"Building Docker image {image_tag}...")

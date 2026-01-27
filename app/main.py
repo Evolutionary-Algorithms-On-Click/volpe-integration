@@ -1,6 +1,7 @@
 import asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from app.models.schemas import OptimizationRequest
 from app.services import builder
 from app.services.framework_client import FrameworkClient
@@ -22,15 +23,33 @@ async def root():
     return {"message": "Volpe Integration Service Operational"}
 
 @app.post("/submit")
-async def submit_job(request: OptimizationRequest):
+async def submit_job(
+    request_data: str = Form(...),
+    file: UploadFile | None = File(None)
+):
     """
-    Receives a notebook, packages it, and forwards it to the Volpe Framework.
+    Receives a notebook (as JSON string), packages it with an optional file, and forwards it to the Volpe Framework.
     """
+    try:
+        request = OptimizationRequest.model_validate_json(request_data)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON data: {e}")
+
     logger.info(f"Received submission for user: {request.user_id}, notebook: {request.notebook_id}")
+
+    data_file = None
+    if file:
+        content = await file.read()
+        data_file = (file.filename, content)
 
     try:
         #  Build the tarball context
-        tar_stream = builder.create_build_context(request.notebook, request.requirements, request.notebook_id)
+        tar_stream = builder.create_build_context(
+            request.notebook, 
+            request.requirements, 
+            request.notebook_id,
+            data_file=data_file
+        )
         
         # Save local copy for debugging/verification
         build_dir = "build_artifacts"
