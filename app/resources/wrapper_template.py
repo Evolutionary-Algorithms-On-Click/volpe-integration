@@ -22,8 +22,6 @@ import volpe_container_pb2_grpc as vp
 
 def individual_to_bytes(ind):
     """Encodes a DEAP individual to bytes (float32 buffer)."""
-    # Flattens list/array to float32 bytes.
-    # If your individual is complex (e.g. tree), you must adapt this logic.
     try:
         arr = np.array(ind, dtype=np.float32)
         return pbc.Individual(genotype=arr.tobytes(), fitness=ind.fitness.values[0] if ind.fitness.valid else 0.0)
@@ -36,10 +34,7 @@ def bytes_to_individual(pb_ind):
     # Reads bytes as float32
     arr = np.frombuffer(pb_ind.genotype, dtype=np.float32)
     
-    # CONVERSION NOTICE:
-    # If your problem uses Integers (like TSP), cast here: arr.astype(int).tolist()
-    # If your problem uses Floats, keep as is: arr.tolist()
-    # Defaulting to float for generic template, CHANGE IF NEEDED:
+
     native_data = arr.tolist() 
     
     ind = creator.Individual(native_data)
@@ -147,33 +142,61 @@ class VolpeGreeterServicer(vp.VolpeContainerServicer):
         generations = request.size if request.size > 0 else 1
         with self.poplock:
             for _ in range(generations):
-                # 1. Select
+                elite = tools.selBest(self.popln, 1)[0]
+                elite = toolbox.clone(elite) # Clone it so it remains safe
+
                 offspring = toolbox.select(self.popln, len(self.popln))
-                # 2. Clone
                 offspring = list(map(toolbox.clone, offspring))
                 
-                # 3. Mate
                 for child1, child2 in zip(offspring[::2], offspring[1::2]):
                     if random.random() < CX_PROB:
                         toolbox.mate(child1, child2)
-                        del child1.fitness.values
-                        del child2.fitness.values
+                        if hasattr(child1.fitness, 'values'): del child1.fitness.values
+                        if hasattr(child2.fitness, 'values'): del child2.fitness.values
                 
-                # 4. Mutate
                 for mutant in offspring:
                     if random.random() < MUT_PROB:
                         toolbox.mutate(mutant)
-                        del mutant.fitness.values
+                        if hasattr(mutant.fitness, 'values'): del mutant.fitness.values
                         
-                # 5. Evaluate
                 invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                fitnesses = map(toolbox.evaluate, invalid_ind)
-                for ind, fit in zip(invalid_ind, fitnesses):
-                    ind.fitness.values = fit
-                    
-                # 6. Replace
-                self.popln = offspring
+                # Fallback to global evaluate if toolbox fails
+                eval_func = getattr(toolbox, 'evaluate', globals().get('evaluate'))
                 
+                if eval_func:
+                    fitnesses = map(eval_func, invalid_ind)
+                    for ind, fit in zip(invalid_ind, fitnesses):
+                        ind.fitness.values = fit
+
+                self.popln = offspring
+
+                is_min = True
+                if hasattr(creator, "FitnessMin") and creator.FitnessMin.weights[0] > 0:
+                     is_min = False
+                
+                if is_min:
+                    # For minimization, worst is the one with highest fitness
+                    worst_idx = max(range(len(self.popln)), key=lambda i: self.popln[i].fitness.values[0])
+                else:
+                    # For maximization, worst is the one with lowest fitness
+                    worst_idx = min(range(len(self.popln)), key=lambda i: self.popln[i].fitness.values[0])
+                
+                self.popln[worst_idx] = elite
+
+                if _ % 50 == 0 and _ > 0:
+                    num_to_replace = max(1, len(self.popln) // 10)
+                    worst_indices = sorted(range(len(self.popln)), 
+                                        key=lambda i: self.popln[i].fitness.values[0], 
+                                        reverse=True)[:num_to_replace]
+                    
+                    new_inds = toolbox.population(n=num_to_replace)
+                    fitnesses = map(eval_func, new_inds)
+                    for ind, fit in zip(new_inds, fitnesses):
+                        ind.fitness.values = fit
+                    
+                    for idx, new_ind in zip(worst_indices, new_inds):
+                        self.popln[idx] = new_ind
+                                
         return pb.Reply(success=True)
 
 if __name__=='__main__':

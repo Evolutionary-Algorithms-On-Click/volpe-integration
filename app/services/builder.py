@@ -43,6 +43,12 @@ def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: 
     main_py_content = generate_wrapper_code(user_code)
     (path / "main.py").write_text(main_py_content, encoding='utf-8')
 
+    #  Write data.csv into tmp dir if exists in root folder
+    data_csv_path = Path("data.csv")
+    if data_csv_path.exists():
+        shutil.copy(data_csv_path, path / "data.csv")
+
+
     # DEBUG: Save generated main.py to local disk for inspection
     debug_dir = Path("debug_artifacts")
     debug_dir.mkdir(exist_ok=True)

@@ -16,35 +16,44 @@ import volpe_container_pb2_grpc as vp
 # --- USER CODE SECTION START ---
 import random
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from deap import base, creator, tools, algorithms
 
-USER_ID = "sudharsan"
-NOTEBOOK_ID = "tsp_ea_001"
-POP_SIZE = 100
+# User and notebook identifiers
+USER_ID = "user1"
+NOTEBOOK_ID = "tsp_data_001"
+
+# Evolutionary algorithm parameters
+POP_SIZE = 10
 CX_PROB = 0.8
-MUT_PROB = 0.2
+MUT_PROB = 0.3
+N_GENERATIONS = 500
 
-DIMENSIONS = 10  # number of cities
-LOWER_BOUND = 0.0
-UPPER_BOUND = 1.0
-SEED = 42
+# Problem definition
+DIMENSIONS = 1000          # number of cities
+LOWER_BOUND = 0          # not used for permutation representation
+UPPER_BOUND = 1          # not used for permutation representation
 
-random.seed(SEED)
-np.random.seed(SEED)
+# Random seed for reproducibility
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
 
-# Random coordinates for each city in the unit square
-CITIES = np.random.uniform(LOWER_BOUND, UPPER_BOUND, size=(DIMENSIONS, 2))
-
+# Define fitness and individual classes
 creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
 creator.create("Individual", list, fitness=creator.FitnessMin)
 
+# Load city coordinates
+city_df = pd.read_csv("data.csv", header=0)  # assumes columns x and y
+city_coords = city_df[["x", "y"]].to_numpy()
+
 def evaluate(individual):
-    """Calculate total Euclidean distance of the tour."""
+    """Calculate total Euclidean tour length for a permutation."""
     distance = 0.0
     for i in range(len(individual)):
-        city_a = CITIES[individual[i]]
-        city_b = CITIES[individual[(i + 1) % len(individual)]]
+        city_a = city_coords[individual[i]]
+        city_b = city_coords[individual[(i + 1) % len(individual)]]
         distance += np.linalg.norm(city_a - city_b)
     return (distance,)
 
@@ -54,33 +63,27 @@ def mate(ind1, ind2):
 
 def mutate(individual):
     """Swap mutation for permutations."""
-    return tools.mutShuffleIndexes(individual, indpb=1.0/len(individual))
+    return tools.mutShuffleIndexes(individual, indpb=0.5 / DIMENSIONS)
 
 def select(population, k):
     """Tournament selection."""
     return tools.selTournament(population, k, tournsize=3)
 
-# Pre‑compute a distance matrix to speed up evaluation (optional)
-DIST_MATRIX = np.sqrt(((CITIES[:, np.newaxis, :] - CITIES[np.newaxis, :, :]) ** 2).sum(axis=2))
-
-def fast_evaluate(individual):
-    """Fast evaluation using the pre‑computed distance matrix."""
-    total = sum(DIST_MATRIX[individual[i], individual[(i + 1) % len(individual)]]
-                for i in range(len(individual)))
-    return (total,)
-
-# If you prefer the fast version, replace evaluate with fast_evaluate in the toolbox.
+# Additional helper: evaluate population fitness in one call
+def evaluate_population(pop):
+    fitnesses = list(map(evaluate, pop))
+    for ind, fit in zip(pop, fitnesses):
+        ind.fitness.values = fit
 
 def create_individual():
     """Create a random permutation representing a tour."""
-    ind = list(range(DIMENSIONS))
-    random.shuffle(ind)
-    return creator.Individual(ind)
+    return creator.Individual(random.sample(range(DIMENSIONS), DIMENSIONS))
 
 toolbox = base.Toolbox()
 toolbox.register("individual", create_individual)
 toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-toolbox.register("evaluate", evaluate)  # switch to fast_evaluate for speed
+
+toolbox.register("evaluate", evaluate)
 toolbox.register("mate", mate)
 toolbox.register("mutate", mutate)
 toolbox.register("select", select)
@@ -216,33 +219,79 @@ class VolpeGreeterServicer(vp.VolpeContainerServicer):
         generations = request.size if request.size > 0 else 1
         with self.poplock:
             for _ in range(generations):
-                # 1. Select
+                # 1. Identify Elite (Best Parent)
+                # We keep a reference to the absolute best parent
+                elite = tools.selBest(self.popln, 1)[0]
+                elite = toolbox.clone(elite) # Clone it so it remains safe
+
+                # 2. Select Parents for Next Gen
+                # This uses your Tournament selection (which preserves diversity)
                 offspring = toolbox.select(self.popln, len(self.popln))
-                # 2. Clone
                 offspring = list(map(toolbox.clone, offspring))
                 
-                # 3. Mate
+                # 3. Apply Crossover (Mate)
                 for child1, child2 in zip(offspring[::2], offspring[1::2]):
                     if random.random() < CX_PROB:
                         toolbox.mate(child1, child2)
-                        del child1.fitness.values
-                        del child2.fitness.values
+                        if hasattr(child1.fitness, 'values'): del child1.fitness.values
+                        if hasattr(child2.fitness, 'values'): del child2.fitness.values
                 
-                # 4. Mutate
+                # 4. Apply Mutation
                 for mutant in offspring:
                     if random.random() < MUT_PROB:
                         toolbox.mutate(mutant)
-                        del mutant.fitness.values
+                        if hasattr(mutant.fitness, 'values'): del mutant.fitness.values
                         
-                # 5. Evaluate
+                # 5. Evaluate Invalid Individuals
                 invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                fitnesses = map(toolbox.evaluate, invalid_ind)
-                for ind, fit in zip(invalid_ind, fitnesses):
-                    ind.fitness.values = fit
-                    
-                # 6. Replace
+                # Fallback to global evaluate if toolbox fails
+                eval_func = getattr(toolbox, 'evaluate', globals().get('evaluate'))
+                
+                if eval_func:
+                    fitnesses = map(eval_func, invalid_ind)
+                    for ind, fit in zip(invalid_ind, fitnesses):
+                        ind.fitness.values = fit
+
+                # 6. REPLACEMENT STRATEGY (The Fix)
+                # Instead of keeping the 'Best of All', we keep ALL children.
+                # This allows 'worse' individuals to survive, maintaining diversity.
                 self.popln = offspring
                 
+                # 7. RE-INJECT ELITE
+                # We find the WORST child and replace it with the BEST parent.
+                # This ensures we never regress, but we don't crowd the population.
+                
+                # Find index of worst child
+                # Check optimization direction (Min or Max)
+                is_min = True
+                if hasattr(creator, "FitnessMin") and creator.FitnessMin.weights[0] > 0:
+                     is_min = False
+                
+                if is_min:
+                    # For minimization, worst is the one with highest fitness
+                    worst_idx = max(range(len(self.popln)), key=lambda i: self.popln[i].fitness.values[0])
+                else:
+                    # For maximization, worst is the one with lowest fitness
+                    worst_idx = min(range(len(self.popln)), key=lambda i: self.popln[i].fitness.values[0])
+                
+                self.popln[worst_idx] = elite
+
+                # 8. DIVERSITY MAINTENANCE
+                # Every 50 generations, replace 10% worst with random new individuals
+                if _ % 50 == 0 and _ > 0:
+                    num_to_replace = max(1, len(self.popln) // 10)
+                    worst_indices = sorted(range(len(self.popln)), 
+                                        key=lambda i: self.popln[i].fitness.values[0], 
+                                        reverse=True)[:num_to_replace]
+                    
+                    new_inds = toolbox.population(n=num_to_replace)
+                    fitnesses = map(eval_func, new_inds)
+                    for ind, fit in zip(new_inds, fitnesses):
+                        ind.fitness.values = fit
+                    
+                    for idx, new_ind in zip(worst_indices, new_inds):
+                        self.popln[idx] = new_ind
+                                
         return pb.Reply(success=True)
 
 if __name__=='__main__':
