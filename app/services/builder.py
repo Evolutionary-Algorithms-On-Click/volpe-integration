@@ -19,6 +19,31 @@ def extract_code_from_notebook(notebook: Notebook) -> str:
                 code_blocks.append(cell.source)
     return "\n\n".join(code_blocks)
 
+
+def santize_code(main_code: str) -> str:
+    # Whenever there is a read_csv, ensure the path is just the last part of the filename (filename.csv)
+    lines = main_code.splitlines()
+    sanitized_lines = []
+    for line in lines:
+        if 'pd.read_csv' in line:
+            parts = line.split('pd.read_csv(')
+            before = parts[0] + 'pd.read_csv('
+            after = parts[1]
+            if ',' in after:
+                path_part = after.split(',')[0].strip().strip('"').strip("'")
+                filename = f"./{os.path.basename(path_part)}"
+                new_line = before + f'"{filename}"' + after[len(path_part)+2:]
+            else:
+                path_part = after.strip().rstrip(')').strip('"').strip("'")
+                filename = f"./{os.path.basename(path_part)}"
+                new_line = before + f'"{filename}")'
+            sanitized_lines.append(new_line)
+        else:
+            sanitized_lines.append(line)
+
+
+    return "\n".join(sanitized_lines)
+
 def generate_wrapper_code(user_code: str) -> str:
     template_path = RESOURCES_PATH / "wrapper_template.py"
     if not template_path.exists():
@@ -41,7 +66,8 @@ def create_build_context_folder(tmp_dir: str, notebook: Notebook, requirements: 
     # Generate main.py
     user_code = extract_code_from_notebook(notebook)
     main_py_content = generate_wrapper_code(user_code)
-    (path / "main.py").write_text(main_py_content, encoding='utf-8')
+    santized_main_code = santize_code(main_py_content)
+    (path / "main.py").write_text(santized_main_code, encoding='utf-8')
 
     #  Write data.csv into tmp dir if exists in root folder
     

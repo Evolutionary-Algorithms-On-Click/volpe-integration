@@ -1,1 +1,0 @@
-print("Wrapper main resource here")
