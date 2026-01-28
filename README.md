@@ -47,6 +47,31 @@ fastapi run app/main.py --port 9000 --reload
 
 The service will be available at `http://localhost:9000`.
 
+## Running with Docker
+
+You can also run the service using Docker. The service is configured to run on port **6000** inside the container.
+
+### Using Docker Compose
+```bash
+docker-compose up --build
+```
+
+The service will be available at `http://localhost:6000`.
+
+### Using Docker CLI
+
+1. **Build the image:**
+   ```bash
+   docker build -t volpe-integration .
+   ```
+
+2. **Run the container:**
+   ```bash
+   docker run -p 6000:6000 -v /var/run/docker.sock:/var/run/docker.sock volpe-integration
+   ```
+
+**Note:** The container needs access to `/var/run/docker.sock` to be able to build and save the optimization job images.
+
 ## API Documentation
 
 ### 1. Submit Job
