@@ -70,7 +70,7 @@ The service will be available at `http://localhost:6000`.
    docker run -p 6000:6000 -v /var/run/docker.sock:/var/run/docker.sock volpe-integration
    ```
 
-**Note:** The container needs access to `/var/run/docker.sock` to be able to build and save the optimization job images.
+**NOTE:** The container needs access to `/var/run/docker.sock` to be able to build and save the optimization job images.
 
 ## API Documentation
 

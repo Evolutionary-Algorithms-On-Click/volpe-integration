@@ -7,6 +7,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # Use host.docker.internal to access services running on the host machine (like the Volpe Framework)
+      # Use host.docker.internal to access services running on the host machine (like the VolPE Framework)
       - VOLPE_FRAMEWORK_URL=http://host.docker.internal:8000
     restart: unless-stopped
