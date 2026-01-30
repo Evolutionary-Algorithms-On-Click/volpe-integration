@@ -33,3 +33,8 @@ class WrapperMainSchema(BaseModel):
     name: str
     version: str
     description: str | None = None
+
+class JobMetadata(BaseModel):
+    problemID: str | None = None  
+    memory: int = Field(default=1, description="Memory in GB")
+    targetInstances: int = Field(default=8, description="Number of worker instances")

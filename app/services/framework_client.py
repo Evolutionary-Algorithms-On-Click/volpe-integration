@@ -1,5 +1,7 @@
 import httpx
 import logging
+import json
+
 
 logger = logging.getLogger(__name__)
 
@@ -10,19 +12,27 @@ class FrameworkClient:
     async def upload_problem(self, problem_id: str, tar_stream, metadata: dict):
         url = f"{self.base_url}/problems/{problem_id}"
         
-        # Prepare the multipart upload
+        # rewind stream
+        if hasattr(tar_stream, 'seek'):
+            tar_stream.seek(0)
+            
+        # verify not empty
+        content_sample = tar_stream.read(10)
+        if len(content_sample) == 0:
+            logger.error("CRITICAL: Attempting to upload EMPTY file stream!")
+            return False
+        tar_stream.seek(0) # Rewind back after checking
+        
         files = {'image': (f'{problem_id}.tar', tar_stream, 'application/x-tar')}
         
-        data = {'metadata': metadata} 
+        data = {'metadata': json.dumps(metadata)}
         
         logger.info(f"Uploading problem {problem_id} to {url}")
         
         async with httpx.AsyncClient() as client:
             try:
-                import json
-                data_str = {'metadata': json.dumps(metadata)}
-                
-                response = await client.post(url, files=files, data=data_str, timeout=30.0)
+                # httpx automatically merges 'files' and 'data' into multipart/form-data
+                response = await client.post(url, files=files, data=data, timeout=30.0)
                 response.raise_for_status()
                 return True
             except httpx.HTTPError as e:
